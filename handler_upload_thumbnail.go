@@ -2,14 +2,14 @@ package main
 
 import (
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 )
 
 func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
@@ -49,10 +49,29 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	// Read file data
-	data, err := io.ReadAll(file)
+	// Get media type and validate
+	mediaType := header.Header.Get("Content-Type")
+	ext, err := getExtensionFromMIME(mediaType)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error reading file", err)
+		respondWithError(w, http.StatusUnsupportedMediaType, "Unsupported file type", err)
+		return
+	}
+
+	// Create filename and path
+	filename := fmt.Sprintf("%s%s", videoID.String(), ext)
+	filePath := filepath.Join(cfg.assetsRoot, filename)
+
+	// Create destination file
+	dst, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create file", err)
+		return
+	}
+	defer dst.Close()
+
+	// Copy file contents
+	if _, err := io.Copy(dst, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to save file", err)
 		return
 	}
 
@@ -67,7 +86,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Verify video ownership
+	// Verify ownership
 	userUUID, err := uuid.Parse(userID.String())
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Invalid user ID", err)
@@ -79,20 +98,9 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Store thumbnail in memory
-	mediaType := header.Header.Get("Content-Type")
-	//videoThumbnails[videoID] = thumbnail{
-	//	data:      data,
-	//	mediaType: mediaType,
-	//}
-
-	// Encode to base64 and create data URL
-	base64String := base64.StdEncoding.EncodeToString(data)
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, base64String)
-
-	// Update database with thumbnail URL
-	//thumbnailURL := fmt.Sprintf("http://localhost:%s/api/thumbnails/%s", cfg.port, videoID)
-	video.ThumbnailURL = &dataURL
+	// Update database with new URL
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, filename)
+	video.ThumbnailURL = &thumbnailURL
 
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
@@ -100,6 +108,21 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Return updated video metadata
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+// Helper function to map MIME types to extensions
+func getExtensionFromMIME(mimeType string) (string, error) {
+	switch mimeType {
+	case "image/jpeg":
+		return ".jpg", nil
+	case "image/png":
+		return ".png", nil
+	case "image/gif":
+		return ".gif", nil
+	case "image/webp":
+		return ".webp", nil
+	default:
+		return "", fmt.Errorf("unsupported MIME type: %s", mimeType)
+	}
 }
