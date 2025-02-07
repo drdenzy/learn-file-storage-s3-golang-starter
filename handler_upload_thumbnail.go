@@ -7,6 +7,7 @@ import (
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,11 +51,27 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	defer file.Close()
 
 	// Get media type and validate
-	mediaType := header.Header.Get("Content-Type")
-	ext, err := getExtensionFromMIME(mediaType)
+	mediaTypeWithParams := header.Header.Get("Content-Type")
+	parsedMediaType, _, err := mime.ParseMediaType(mediaTypeWithParams)
+	//ext, err := getImageExtensionFromMIME(mediaType)
 	if err != nil {
-		respondWithError(w, http.StatusUnsupportedMediaType, "Unsupported file type", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type header", err)
 		return
+	}
+
+	// Allow only JPEG and PNG
+	if parsedMediaType != "image/jpeg" && parsedMediaType != "image/png" {
+		respondWithError(w, http.StatusUnsupportedMediaType, "Only JPEG and PNG images are allowed", nil)
+		return
+	}
+
+	// Determine file extension
+	var ext string
+	switch parsedMediaType {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
 	}
 
 	// Create filename and path
@@ -124,5 +141,21 @@ func getExtensionFromMIME(mimeType string) (string, error) {
 		return ".webp", nil
 	default:
 		return "", fmt.Errorf("unsupported MIME type: %s", mimeType)
+	}
+}
+
+func getImageExtensionFromMIME(contentType string) (string, error) {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", fmt.Errorf("invalid MIME type: %s", contentType)
+	}
+
+	switch mediaType {
+	case "image/jpeg":
+		return ".jpg", nil
+	case "image/png":
+		return ".png", nil
+	default:
+		return "", fmt.Errorf("unsupported MIME type: %s", mediaType)
 	}
 }
