@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -74,8 +76,16 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		ext = ".png"
 	}
 
+	// Generate random filename
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Failed to generate filename", err)
+		return
+	}
+
 	// Create filename and path
-	filename := fmt.Sprintf("%s%s", videoID.String(), ext)
+	filename := base64.RawURLEncoding.EncodeToString(randomBytes) + ext
 	filePath := filepath.Join(cfg.assetsRoot, filename)
 
 	// Create destination file
@@ -126,36 +136,4 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	respondWithJSON(w, http.StatusOK, video)
-}
-
-// Helper function to map MIME types to extensions
-func getExtensionFromMIME(mimeType string) (string, error) {
-	switch mimeType {
-	case "image/jpeg":
-		return ".jpg", nil
-	case "image/png":
-		return ".png", nil
-	case "image/gif":
-		return ".gif", nil
-	case "image/webp":
-		return ".webp", nil
-	default:
-		return "", fmt.Errorf("unsupported MIME type: %s", mimeType)
-	}
-}
-
-func getImageExtensionFromMIME(contentType string) (string, error) {
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return "", fmt.Errorf("invalid MIME type: %s", contentType)
-	}
-
-	switch mediaType {
-	case "image/jpeg":
-		return ".jpg", nil
-	case "image/png":
-		return ".png", nil
-	default:
-		return "", fmt.Errorf("unsupported MIME type: %s", mediaType)
-	}
 }
