@@ -2,22 +2,83 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
+
+// ffprobeOutput struct
+type ffprobeOutput struct {
+	Streams []struct {
+		CodecType string `json:"codec_type"`
+		Width     int    `json:"width"`
+		Height    int    `json:"height"`
+	} `json:"streams"`
+}
+
+// getVideoAspectRatio determines video aspect ratio using ffprobe
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error",
+		"-print_format", "json",
+		"-show_streams", filePath)
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffprobe failed: %w", err)
+	}
+
+	var output ffprobeOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		return "", fmt.Errorf("failed to parse ffprobe output: %w", err)
+	}
+
+	// Find first video stream
+	var width, height int
+	for _, stream := range output.Streams {
+		if stream.CodecType == "video" {
+			width = stream.Width
+			height = stream.Height
+			break
+		}
+	}
+
+	if width == 0 || height == 0 {
+		return "", fmt.Errorf("no video stream found")
+	}
+
+	// Calculate aspect ratio with tolerance
+	ratio := float64(width) / float64(height)
+	const tolerance = 0.05
+	landscapeTarget := 16.0 / 9.0
+	portraitTarget := 9.0 / 16.0
+
+	switch {
+	case math.Abs(ratio-landscapeTarget) <= landscapeTarget*tolerance:
+		return "landscape", nil
+	case math.Abs(ratio-portraitTarget) <= portraitTarget*tolerance:
+		return "portrait", nil
+	default:
+		return "other", nil
+	}
+}
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	// Set 1GB upload limit
@@ -117,14 +178,23 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Generate random filename
+	// Get aspect ratio
+	aspect, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Failed to analyze video", err)
+		return
+	}
+
+	// Generate random filename with prefix
 	randomBytes := make([]byte, 32)
 	if _, err := rand.Read(randomBytes); err != nil {
 		respondWithError(w, http.StatusInternalServerError,
 			"Failed to generate filename", err)
 		return
 	}
-	objectKey := base64.RawURLEncoding.EncodeToString(randomBytes) + ".mp4"
+	baseName := base64.RawURLEncoding.EncodeToString(randomBytes)
+	objectKey := fmt.Sprintf("%s/%s.mp4", aspect, baseName)
 
 	// Upload to S3
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
