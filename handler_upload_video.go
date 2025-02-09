@@ -80,6 +80,28 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	}
 }
 
+// processVideoForFastStart processes video for streaming optimization
+func processVideoForFastStart(filePath string) (string, error) {
+	outputPath := filePath + ".processing"
+
+	cmd := exec.Command("ffmpeg",
+		"-i", filePath, // Input file
+		"-c", "copy", // Copy codec without re-encoding
+		"-movflags", "faststart", // Move metadata to beginning
+		"-f", "mp4", // Force MP4 format
+		outputPath, // Output file
+	)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg failed: %w\nStderr: %s", err, stderr.String())
+	}
+
+	return outputPath, nil
+}
+
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	// Set 1GB upload limit
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<30)
@@ -186,7 +208,55 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Generate random filename with prefix
+	//// Generate random filename with prefix
+	//randomBytes := make([]byte, 32)
+	//if _, err := rand.Read(randomBytes); err != nil {
+	//	respondWithError(w, http.StatusInternalServerError,
+	//		"Failed to generate filename", err)
+	//	return
+	//}
+	//baseName := base64.RawURLEncoding.EncodeToString(randomBytes)
+	//objectKey := fmt.Sprintf("%s/%s.mp4", aspect, baseName)
+	//
+	//// Upload to S3
+	//_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
+	//	Bucket:      aws.String(cfg.s3Bucket),
+	//	Key:         aws.String(objectKey),
+	//	Body:        tempFile,
+	//	ContentType: aws.String("video/mp4"),
+	//})
+	//if err != nil {
+	//	respondWithError(w, http.StatusInternalServerError,
+	//		"Failed to upload to S3", err)
+	//	return
+	//}
+
+	// Process video for fast start
+	processedPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Video processing failed", err)
+		return
+	}
+	defer os.Remove(processedPath)
+
+	// Open processed file
+	processedFile, err := os.Open(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Failed to open processed video", err)
+		return
+	}
+	defer processedFile.Close()
+
+	// Reset file pointer
+	if _, err := processedFile.Seek(0, io.SeekStart); err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Failed to read processed video", err)
+		return
+	}
+
+	// Generate S3 key with aspect prefix
 	randomBytes := make([]byte, 32)
 	if _, err := rand.Read(randomBytes); err != nil {
 		respondWithError(w, http.StatusInternalServerError,
@@ -196,11 +266,11 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	baseName := base64.RawURLEncoding.EncodeToString(randomBytes)
 	objectKey := fmt.Sprintf("%s/%s.mp4", aspect, baseName)
 
-	// Upload to S3
+	// Upload processed file to S3
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(objectKey),
-		Body:        tempFile,
+		Body:        processedFile,
 		ContentType: aws.String("video/mp4"),
 	})
 	if err != nil {
