@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -82,6 +83,7 @@ func (cfg *apiConfig) handlerVideoMetaDelete(w http.ResponseWriter, r *http.Requ
 }
 
 func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
+
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -95,7 +97,16 @@ func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, video)
+	signedVideo, err := cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		// Return video without URL instead of error
+		log.Printf("Failed to generate URL for video %s: %v", videoID, err)
+		video.VideoURL = nil
+		respondWithJSON(w, http.StatusOK, video)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, signedVideo)
 }
 
 func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Request) {
@@ -112,9 +123,21 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 
 	videos, err := cfg.db.GetVideos(userID)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve videos", err)
+		respondWithError(w, http.StatusInternalServerError,
+			"Couldn't retrieve videos", err)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, videos)
+	signedVideos := make([]database.Video, 0, len(videos))
+	for _, video := range videos {
+		signed, err := cfg.dbVideoToSignedVideo(video)
+		if err != nil {
+			// Log but continue processing other videos
+			log.Printf("Skipping video %s: %v", video.ID, err)
+			continue
+		}
+		signedVideos = append(signedVideos, signed)
+	}
+
+	respondWithJSON(w, http.StatusOK, signedVideos)
 }
